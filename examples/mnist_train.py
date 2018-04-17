@@ -6,6 +6,7 @@ from __future__ import print_function
 
 import argparse
 import os
+import logging
 import numpy as np
 import tensorflow as tf
 from tensorflow.python.saved_model import builder as saved_model_builder
@@ -21,12 +22,27 @@ def _decode_image_file(filename, label):
   return image_decoded, label
 
 
+def restore_from_checkpoint(sess, saver, checkpoint):
+  if checkpoint:
+    logging.info("Restore session from checkpoint: {}".format(checkpoint))
+    saver.restore(sess, checkpoint)
+    return True
+  else:
+    logging.warn("Checkpoint not found: {}".format(checkpoint))
+    return False
+
+
 def main(args):
   input_feature_size = 28 * 28
   output_label_size = 10
   learning_rate = 0.1
   epoch_number = 10
   batch_size = 3
+  checkpoint_path = "./checkpoint"
+  if os.path.exists(checkpoint_path) == False:
+    os.makedirs(checkpoint_path)
+  checkpoint_file = checkpoint_path + "/checkpoint.ckpt"
+  latest_checkpoint = tf.train.latest_checkpoint(checkpoint_path)
 
   # Get the train images and labels
   image_list = [
@@ -59,11 +75,13 @@ def main(args):
     return logits
 
   # Define train op
+  global_step = tf.Variable(0, name="global_step", trainable=False)
   logits = _model(batch_features_op)
   loss = tf.reduce_mean(
       tf.nn.sparse_softmax_cross_entropy_with_logits(
           logits=logits, labels=batch_label_op))
-  train_op = tf.train.GradientDescentOptimizer(learning_rate).minimize(loss)
+  train_op = tf.train.GradientDescentOptimizer(learning_rate).minimize(
+      loss, global_step=global_step)
 
   # Define validate op
   train_accuracy_logits = _model(batch_features_op)
@@ -81,6 +99,9 @@ def main(args):
   model_softmax = tf.nn.softmax(model_logits)
   model_prediction = tf.argmax(model_softmax, 1)
 
+  #saveable = tf.contrib.data.make_saveable_from_iterator(iterator)
+  #tf.add_to_collection(tf.GraphKeys.SAVEABLE_OBJECTS, saveable)
+  saver = tf.train.Saver()
 
   def export_model():
     model_path = "model"
@@ -121,16 +142,19 @@ def main(args):
             label_list_placeholder: label_list
         })
 
+    restore_from_checkpoint(sess, saver, latest_checkpoint)
+
     try:
-      step_index = 0
+
       while True:
 
-        _, loss_value = sess.run([train_op, loss])
-        print("Run step: {}, loss: {}".format(step_index, loss_value))
-        step_index += 1
+        _, loss_value, step_value = sess.run([train_op, loss, global_step])
+        print("Run step: {}, loss: {}".format(step_value, loss_value))
 
         train_accuracy_value = sess.run(train_accuracy_op)
         print("Train accuracy: {}".format(train_accuracy_value))
+
+        saver.save(sess, checkpoint_file, global_step=step_value)
 
     except tf.errors.OutOfRangeError:
       print("End of training")
